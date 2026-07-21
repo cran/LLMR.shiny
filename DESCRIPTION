@@ -1,0 +1,27 @@
+Package: LLMR.shiny
+Title: Shared 'Shiny' Substrate for 'LLMR' Family GUIs
+Version: 0.1.1
+Authors@R: 
+    person("Ali", "Sanaei", , "sanaei@uchicago.edu", role = c("aut", "cre"))
+Description: Provides the shared shell that 'LLMR'-family graphical interfaces
+    are built on. It includes provider and model selection,
+    environment-variable-based API-key handling, demo and live runners, session
+    cost accounting, error banners, comma-separated-value upload and column
+    mapping, and display helpers for the shared diagnostics() and report()
+    generics. Graphical interfaces for the method packages import these helpers
+    rather than each reimplementing them, so a fix here is available to every
+    interface that depends on it.
+License: MIT + file LICENSE
+URL: https://github.com/asanaei/LLMR.shiny
+BugReports: https://github.com/asanaei/LLMR.shiny/issues
+Encoding: UTF-8
+RoxygenNote: 7.3.3
+Imports: shiny, bslib, stats, utils
+Suggests: LLMR (>= 0.8.8), DT, testthat (>= 3.0.0)
+Config/testthat/edition: 3
+NeedsCompilation: no
+Packaged: 2026-07-10 17:14:16 UTC; ali
+Author: Ali Sanaei [aut, cre]
+Maintainer: Ali Sanaei <sanaei@uchicago.edu>
+Repository: CRAN
+Date/Publication: 2026-07-21 06:30:02 UTC
