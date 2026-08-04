@@ -1,7 +1,7 @@
 # runners.R --------------------------------------------------------------------
-# Runners. Demo mode is a deterministic offline stub returning LLMR-shaped
-# response columns, marked as a demo; live mode returns NULL so the calling
-# package uses its own default runner (LLMR::call_llm_par via its .runner seam).
+# Demonstration mode returns reproducible offline responses marked as
+# demonstrations. Live mode delegates request rows to LLMR::call_llm_par
+# through a replaceable function for live execution.
 
 #' Demo-result notice string
 #'
@@ -11,33 +11,55 @@ demo_notice <- function() {
   "DEMO RESULT -- offline stub, not a model, not a finding"
 }
 
-#' Build an LLM config, falling back to a plain list without LLMR
+#' Build an LLM config
 #'
 #' @param provider,model Provider and model ids.
-#' @param ... Passed to [LLMR::llm_config()] (e.g. `temperature`).
-#' @return An `llm_config` when LLMR is available, else a tagged list.
+#' @param ... Other arguments passed to [LLMR::llm_config()].
+#' @param temperature Sampling temperature, or `NULL` to use the model default.
+#' @param max_tokens Maximum output tokens, or `NULL`, `NA`, or `""` to use the
+#'   model default.
+#' @param reasoning_effort Reasoning effort (`"low"`, `"medium"`, or `"high"`),
+#'   or `NULL` or `""` to use the model default.
+#' @return An `LLMR::llm_config`.
 #' @export
-build_llm_config <- function(provider, model, ...) {
-  dots <- list(...)
-  if (requireNamespace("LLMR", quietly = TRUE)) {
-    return(do.call(LLMR::llm_config, c(list(provider = provider, model = model), dots)))
+build_llm_config <- function(provider, model, ..., temperature = NULL,
+                             max_tokens = NULL, reasoning_effort = NULL) {
+  if (!pkg_available("LLMR")) {
+    stop(
+      "Package 'LLMR' is required to build a live config. Install it with install.packages(\"LLMR\").",
+      call. = FALSE
+    )
   }
-  structure(
-    c(list(provider = provider, model = model), dots),
-    class = "llmrshiny_config"
+  model_params <- list(...)
+  if (length(temperature) == 1L && !is.na(temperature) &&
+      (!is.character(temperature) || nzchar(trimws(temperature)))) {
+    model_params$temperature <- temperature
+  }
+  if (length(max_tokens) == 1L && !is.na(max_tokens) &&
+      (!is.character(max_tokens) || nzchar(trimws(max_tokens)))) {
+    model_params$max_tokens <- max_tokens
+  }
+  if (length(reasoning_effort) == 1L && !is.na(reasoning_effort) &&
+      nzchar(trimws(reasoning_effort))) {
+    model_params$reasoning_effort <- reasoning_effort
+  }
+  do.call(
+    LLMR::llm_config,
+    c(list(provider = provider, model = model), model_params)
   )
 }
 
-#' A deterministic offline demo runner
+#' An offline demonstration response function
 #'
-#' Returns a function with the `.runner` contract `(experiments, ...)` that adds
-#' LLMR-shaped response columns. The per-row response text is decided by
-#' `responder`, a function `(text) -> character`. Results are marked as demo.
+#' Returns a function accepted by `.runner` arguments. It adds LLMR response
+#' columns to a request data frame. The per-row response text is decided by
+#' `responder`, a function `(text) -> character`. Results are marked as
+#' demonstrations.
 #'
 #' @param responder A function mapping a single input text to a response string.
 #'   Defaults to echoing a short stub.
 #' @param text_cols Candidate column names to read the input text from.
-#' @return A runner function of class `llmrshiny_demo_runner`.
+#' @return A response function of class `llmrshiny_demo_runner`.
 #' @export
 demo_runner <- function(responder = NULL,
                         text_cols = c("text", "unit", "document", "prompt", "input")) {
@@ -74,12 +96,11 @@ demo_runner <- function(responder = NULL,
   structure(runner, class = c("llmrshiny_demo_runner", "function"))
 }
 
-#' Build a runner for a mode
+#' Build an execution function for a mode
 #'
 #' @param mode `"demo"` or `"live"`.
-#' @param responder Optional demo responder (see [demo_runner()]).
-#' @return A demo runner for `"demo"`, or `NULL` for `"live"` (use the package
-#'   default downstream).
+#' @param responder Optional demonstration responder (see [demo_runner()]).
+#' @return A callable function that accepts a request data frame.
 #' @export
 build_runner <- function(mode, responder = NULL) {
   # An unrecognized mode (a typo) must not silently fall through to the live,
@@ -88,27 +109,73 @@ build_runner <- function(mode, responder = NULL) {
     stop("`mode` must be \"demo\" or \"live\", not ",
          deparse(mode), ".", call. = FALSE)
   }
-  if (identical(mode, "demo")) demo_runner(responder) else NULL
+  if (identical(mode, "demo")) return(demo_runner(responder))
+
+  function(experiments, ...) {
+    if (!pkg_available("LLMR")) {
+      stop(
+        "Package 'LLMR' is required for live runs. Install it with install.packages(\"LLMR\").",
+        call. = FALSE
+      )
+    }
+    valid <- is.data.frame(experiments) &&
+      all(c("config", "messages") %in% names(experiments)) &&
+      is.list(experiments$config) && is.list(experiments$messages) &&
+      all(vapply(experiments$config, inherits, logical(1), "llm_config"))
+    if (!valid) {
+      stop(
+        "`experiments` must contain `config` and `messages` list-columns, with an `llm_config` in each row.",
+        call. = FALSE
+      )
+    }
+    LLMR::call_llm_par(experiments, ...)
+  }
 }
 
-#' Mark a result as a demo result
-#' @param x A result object.
-#' @return `x` with a `llmrshiny_demo` attribute.
+#' Mark a result frame as demonstration output
+#'
+#' Marks a result produced without a live model: a `run_mode` column set to
+#' `"demo"`, a `demo_notice` column, and the `llmrshiny_demo_result` class that
+#' [is_demo_result()] tests and [demo_banner_ui()] announces. [demo_runner()]
+#' applies it automatically; call it directly for demonstration results built
+#' some other way.
+#'
+#' @param x A data frame of results.
+#' @return `x` with the two source columns and the demonstration class added.
+#' @examples
+#' annotate_demo_result(data.frame(response_text = "stub"))
 #' @export
 annotate_demo_result <- function(x) {
-  attr(x, "llmrshiny_demo") <- TRUE
+  n <- NROW(x)
+  x$run_mode <- rep("demo", n)
+  x$demo_notice <- rep(demo_notice(), n)
+  class(x) <- unique(c("llmrshiny_demo_result", class(x)))
   x
 }
 
-#' Is a result a demo result?
+#' Is a result a demonstration result?
 #' @param x A result object.
-#' @return `TRUE` when marked by [annotate_demo_result()].
+#' @return `TRUE` when the result has the demonstration class or source fields.
 #' @export
 is_demo_result <- function(x) {
-  isTRUE(attr(x, "llmrshiny_demo", exact = TRUE))
+  inherits(x, "llmrshiny_demo_result") ||
+    (is.list(x) && "run_mode" %in% names(x) && any(x$run_mode %in% "demo"))
 }
 
-#' A banner announcing a demo result
+#' @param x A demonstration result.
+#' @param ... Passed to the next print method.
+#' @rdname demo_runner
+#' @export
+print.llmrshiny_demo_result <- function(x, ...) {
+  cat(demo_notice(), "\n", sep = "")
+  shown <- x
+  shown$demo_notice <- NULL
+  class(shown) <- setdiff(class(shown), "llmrshiny_demo_result")
+  print(shown, ...)
+  invisible(x)
+}
+
+#' A banner announcing a demonstration result
 #' @return A warning card.
 #' @export
 demo_banner_ui <- function() {
@@ -121,8 +188,9 @@ demo_banner_ui <- function() {
 #' Extract call/token counts from a result frame
 #'
 #' @param x A result data frame (or list containing one).
-#' @param fallback_calls Call count to assume when none can be read.
-#' @return A list `list(calls, sent, received, total)`.
+#' @param fallback_calls Call count to use when `x` has no result frame.
+#' @return A list with token totals and either `calls`, when explicit call
+#'   provenance is available, or `result_rows`.
 #' @export
 extract_token_counts <- function(x, fallback_calls = 0L) {
   df <- if (is.data.frame(x)) x else NULL
@@ -148,8 +216,21 @@ extract_token_counts <- function(x, fallback_calls = 0L) {
   } else {
     sent + received
   }
-  calls <- if ("response_text" %in% names(df)) NROW(df) else fallback_calls
+  ids <- NULL
+  for (column in intersect(c("call_id", "request_id", "response_id"), names(df))) {
+    candidate <- as.character(unlist(df[[column]], use.names = FALSE))
+    candidate <- candidate[!is.na(candidate) & nzchar(candidate)]
+    if (length(candidate) > 0L) {
+      ids <- candidate
+      break
+    }
+  }
+  count <- if (!is.null(ids) && !is_demo_result(df)) {
+    list(calls = as.integer(length(unique(ids))))
+  } else {
+    list(result_rows = as.integer(NROW(df)))
+  }
 
-  list(calls = as.integer(calls), sent = as.integer(sent),
-       received = as.integer(received), total = as.integer(total))
+  c(count, list(sent = as.integer(sent), received = as.integer(received),
+                total = as.integer(total)))
 }

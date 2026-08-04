@@ -2,16 +2,23 @@
 % Please edit documentation in R/runners.R
 \name{annotate_demo_result}
 \alias{annotate_demo_result}
-\title{Mark a result as a demo result}
+\title{Mark a result frame as demonstration output}
 \usage{
 annotate_demo_result(x)
 }
 \arguments{
-\item{x}{A result object.}
+\item{x}{A data frame of results.}
 }
 \value{
-\code{x} with a \code{llmrshiny_demo} attribute.
+\code{x} with the two source columns and the demonstration class added.
 }
 \description{
-Mark a result as a demo result
+Marks a result produced without a live model: a \code{run_mode} column set to
+\code{"demo"}, a \code{demo_notice} column, and the \code{llmrshiny_demo_result} class that
+\code{\link[=is_demo_result]{is_demo_result()}} tests and \code{\link[=demo_banner_ui]{demo_banner_ui()}} announces. \code{\link[=demo_runner]{demo_runner()}}
+applies it automatically; call it directly for demonstration results built
+some other way.
+}
+\examples{
+annotate_demo_result(data.frame(response_text = "stub"))
 }

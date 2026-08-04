@@ -2,18 +2,33 @@
 % Please edit documentation in R/runners.R
 \name{build_llm_config}
 \alias{build_llm_config}
-\title{Build an LLM config, falling back to a plain list without LLMR}
+\title{Build an LLM config}
 \usage{
-build_llm_config(provider, model, ...)
+build_llm_config(
+  provider,
+  model,
+  ...,
+  temperature = NULL,
+  max_tokens = NULL,
+  reasoning_effort = NULL
+)
 }
 \arguments{
 \item{provider, model}{Provider and model ids.}
 
-\item{...}{Passed to \code{\link[LLMR:llm_config]{LLMR::llm_config()}} (e.g. \code{temperature}).}
+\item{...}{Other arguments passed to \code{\link[LLMR:llm_config]{LLMR::llm_config()}}.}
+
+\item{temperature}{Sampling temperature, or \code{NULL} to use the model default.}
+
+\item{max_tokens}{Maximum output tokens, or \code{NULL}, \code{NA}, or \code{""} to use the
+model default.}
+
+\item{reasoning_effort}{Reasoning effort (\code{"low"}, \code{"medium"}, or \code{"high"}),
+or \code{NULL} or \code{""} to use the model default.}
 }
 \value{
-An \code{llm_config} when LLMR is available, else a tagged list.
+An \code{LLMR::llm_config}.
 }
 \description{
-Build an LLM config, falling back to a plain list without LLMR
+Build an LLM config
 }

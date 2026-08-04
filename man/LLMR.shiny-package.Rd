@@ -4,11 +4,11 @@
 \name{LLMR.shiny-package}
 \alias{LLMR.shiny}
 \alias{LLMR.shiny-package}
-\title{LLMR.shiny: Shared 'Shiny' Substrate for 'LLMR' Family GUIs}
+\title{LLMR.shiny: Shared 'Shiny' Components for 'LLMR' Family Applications}
 \description{
 \if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
 
-Provides the shared shell that 'LLMR'-family graphical interfaces are built on. It includes provider and model selection, environment-variable-based API-key handling, demo and live runners, session cost accounting, error banners, comma-separated-value upload and column mapping, and display helpers for the shared diagnostics() and report() generics. Graphical interfaces for the method packages import these helpers rather than each reimplementing them, so a fix here is available to every interface that depends on it.
+Reusable 'Shiny' user interface and server components from which the graphical applications in the 'LLMR' package family are assembled.
 }
 \seealso{
 Useful links:

@@ -2,24 +2,32 @@
 % Please edit documentation in R/runners.R
 \name{demo_runner}
 \alias{demo_runner}
-\title{A deterministic offline demo runner}
+\alias{print.llmrshiny_demo_result}
+\title{An offline demonstration response function}
 \usage{
 demo_runner(
   responder = NULL,
   text_cols = c("text", "unit", "document", "prompt", "input")
 )
+
+\method{print}{llmrshiny_demo_result}(x, ...)
 }
 \arguments{
 \item{responder}{A function mapping a single input text to a response string.
 Defaults to echoing a short stub.}
 
 \item{text_cols}{Candidate column names to read the input text from.}
+
+\item{x}{A demonstration result.}
+
+\item{...}{Passed to the next print method.}
 }
 \value{
-A runner function of class \code{llmrshiny_demo_runner}.
+A response function of class \code{llmrshiny_demo_runner}.
 }
 \description{
-Returns a function with the \code{.runner} contract \verb{(experiments, ...)} that adds
-LLMR-shaped response columns. The per-row response text is decided by
-\code{responder}, a function \code{(text) -> character}. Results are marked as demo.
+Returns a function accepted by \code{.runner} arguments. It adds LLMR response
+columns to a request data frame. The per-row response text is decided by
+\code{responder}, a function \code{(text) -> character}. Results are marked as
+demonstrations.
 }

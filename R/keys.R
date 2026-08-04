@@ -1,23 +1,43 @@
 # keys.R -----------------------------------------------------------------------
 # Providers and their keys. Keys are read from environment variables only,
-# following the formula c("<PROVIDER>_API_KEY", "<PROVIDER>_KEY"). No GUI built
-# on this substrate ever accepts a pasted key or prints a key value.
+# following the formula c("<PROVIDER>_API_KEY", "<PROVIDER>_KEY"). These
+# components never accept a pasted key or print a key value.
 
 #' Provider registry
 #'
+#' The registry supplies a working default model for each provider. Set the
+#' `LLMR.shiny.default_models` option to a named character vector to replace
+#' selected defaults without changing the others.
+#'
+#' Built-in defaults are `openai/gpt-oss-20b` for Groq and Together,
+#' `gpt-4o-mini` for OpenAI, `claude-haiku-4-5` for Anthropic,
+#' `deepseek-v4-flash` for DeepSeek, and `gemini-3.1-flash-lite` for Gemini.
+#'
+#' @param default_models A named character vector of provider model defaults.
 #' @return A data frame of `provider`, `display`, and `default_model`.
 #' @export
-provider_registry <- function() {
+provider_registry <- function(
+    default_models = getOption("LLMR.shiny.default_models", character())) {
+  providers <- c(
+    "groq", "openai", "anthropic", "together", "deepseek", "gemini"
+  )
+  defaults <- c(
+    "openai/gpt-oss-20b",
+    "gpt-4o-mini",
+    "claude-haiku-4-5",
+    "openai/gpt-oss-20b",
+    "deepseek-v4-flash",
+    "gemini-3.1-flash-lite"
+  )
+  overrides <- unname(default_models[providers])
+  has_override <- !is.na(overrides)
+  defaults[has_override] <- overrides[has_override]
   data.frame(
-    provider = c("groq", "openai", "anthropic", "together", "deepseek"),
-    display = c("Groq", "OpenAI", "Anthropic", "Together", "DeepSeek"),
-    default_model = c(
-      "llama-3.3-70b-versatile",
-      "gpt-4.1-mini",
-      "claude-3-5-sonnet-latest",
-      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-      "deepseek-chat"
+    provider = providers,
+    display = c(
+      "Groq", "OpenAI", "Anthropic", "Together", "DeepSeek", "Gemini"
     ),
+    default_model = defaults,
     stringsAsFactors = FALSE
   )
 }
@@ -34,7 +54,7 @@ provider_choices <- function() {
 #' Default model for a provider
 #'
 #' @param provider Provider id.
-#' @return The default model string, or `""`.
+#' @return The default model string, or `""` for an unknown provider.
 #' @export
 provider_default_model <- function(provider) {
   reg <- provider_registry()

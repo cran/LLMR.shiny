@@ -20,27 +20,89 @@ test_that("key_state reads env vars and never exposes the key value", {
   expect_false(grepl("super-secret", txt, fixed = TRUE))
 })
 
-test_that("provider registry resolves defaults", {
-  expect_equal(provider_default_model("groq"), "llama-3.3-70b-versatile")
+test_that("provider model defaults are populated and overrideable", {
+  withr::local_options(LLMR.shiny.default_models = NULL)
+  reg <- provider_registry()
+  expect_equal(
+    reg$default_model,
+    c(
+      "openai/gpt-oss-20b",
+      "gpt-4o-mini",
+      "claude-haiku-4-5",
+      "openai/gpt-oss-20b",
+      "deepseek-v4-flash",
+      "gemini-3.1-flash-lite"
+    )
+  )
   expect_equal(provider_display_name("openai"), "OpenAI")
   ch <- provider_choices()
-  expect_true("groq" %in% ch)
+  expect_equal(unname(ch), reg$provider)
+  expect_equal(names(ch), reg$display)
+
+  withr::local_options(
+    LLMR.shiny.default_models = c(groq = "test-model")
+  )
+  expect_identical(provider_default_model("groq"), "test-model")
+  expect_identical(provider_default_model("openai"), "gpt-4o-mini")
 })
 
-test_that("demo runner returns LLMR-shaped columns and marks the result", {
+test_that("demo runner returns marked LLMR-shaped results", {
   r <- demo_runner(function(t) if (grepl("policy", t)) "policy" else "other")
   out <- r(data.frame(text = c("a policy item", "something else")))
   expect_equal(nrow(out), 2)
   expect_true(all(c("response_text", "success", "sent_tokens", "rec_tokens",
                     "total_tokens", "response_id") %in% names(out)))
   expect_equal(out$response_text, c("policy", "other"))
+  expect_s3_class(out, "llmrshiny_demo_result")
+  expect_true(all(out$run_mode == "demo"))
+  expect_true(all(out$demo_notice == demo_notice()))
   expect_true(is_demo_result(out))
   expect_true(all(out$success))
+
+  expect_true(is_demo_result(out[1, , drop = FALSE]))
+  expect_true(is_demo_result(rbind(out[1, , drop = FALSE],
+                                   out[2, , drop = FALSE])))
+  plain <- out
+  class(plain) <- "data.frame"
+  expect_true(is_demo_result(plain))
+
+  printed <- paste(utils::capture.output(print(out)), collapse = "\n")
+  expect_match(printed, demo_notice(), fixed = TRUE)
+  hits <- gregexpr(demo_notice(), printed, fixed = TRUE)[[1]]
+  expect_equal(sum(hits > 0L), 1L)
 })
 
-test_that("build_runner gives a demo runner or NULL for live", {
+test_that("build_runner returns a live runner that validates and forwards", {
+  skip_if_not_installed("LLMR")
+  withr::local_envvar(GROQ_API_KEY = "test-key-not-real")
+
+  experiments <- data.frame(experiment = 1L)
+  experiments$config <- I(list(LLMR::llm_config("groq", "test-model")))
+  experiments$messages <- I(list(c(user = "hello")))
+  seen <- new.env(parent = emptyenv())
+  sentinel <- data.frame(response_text = "stubbed")
+  local_mocked_bindings(
+    call_llm_par = function(experiments, ...) {
+      seen$experiments <- experiments
+      seen$dots <- list(...)
+      sentinel
+    },
+    .package = "LLMR"
+  )
+
+  live <- build_runner("live")
   expect_true(is.function(build_runner("demo")))
-  expect_null(build_runner("live"))
+  expect_true(is.function(live))
+  expect_identical(live(experiments, tries = 1L), sentinel)
+  expect_identical(seen$experiments, experiments)
+  expect_identical(seen$dots$tries, 1L)
+
+  bad_config <- experiments
+  bad_config$config <- "not a list-column"
+  expect_error(live(bad_config), "list-column")
+  bad_messages <- experiments
+  bad_messages$messages <- "not a list-column"
+  expect_error(live(bad_messages), "list-column")
 })
 
 test_that("column mapping validates and maps, one row per input row", {
@@ -53,23 +115,164 @@ test_that("column mapping validates and maps, one row per input row", {
   expect_error(validate_column_mapping(df, "missing"), "text column")
 })
 
-test_that("cost accounting accumulates usage and plans", {
-  s <- cost_empty()
-  s <- cost_set_plan(s, 10, "tuning")
+test_that("display tables round only ordinary double columns", {
+  original <- data.frame(
+    message_id = c(1000000.123, 1000001.987),
+    respondentId = c(2000000.123, 2000001.987),
+    share = c(0.123456, 0.987654),
+    seconds = c(1.23456, 9.87654),
+    count = c(3L, 7L),
+    label = c("a", "b"),
+    stringsAsFactors = FALSE
+  )
+  shown <- as_display_table(original)
+
+  expect_identical(shown$message_id, original$message_id)
+  expect_identical(shown$respondentId, original$respondentId)
+  expect_equal(shown$share, c(0.123, 0.988))
+  expect_equal(shown$seconds, c(1.23, 9.88))
+  expect_identical(shown$count, original$count)
+  expect_identical(shown$label, original$label)
+  expect_equal(original$share, c(0.123456, 0.987654))
+
+  fewer <- as_display_table(original, digits = 2L)
+  expect_equal(fewer$share, c(0.12, 0.99))
+  expect_error(as_display_table(original, digits = 0L), "positive whole")
+
+  nested <- as_display_table(list(results = original), component = "results")
+  expect_equal(nested$share, shown$share)
+})
+
+test_that("usage accounting accumulates realized and planned usage", {
+  s <- usage_empty()
+  s <- usage_set_plan(s, 10, "tuning")
   expect_equal(s$planned_calls, 10L)
-  s <- cost_add_usage(s, list(calls = 3, sent = 100, received = 50, total = 150))
+  planned_text <- paste(as.character(usage_tile(s)), collapse = " ")
+  expect_match(planned_text, "10 planned calls", fixed = TRUE)
+  expect_match(planned_text, "Sent 0 / Received 0 tokens", fixed = TRUE)
+  expect_match(planned_text, "Calls are API requests.", fixed = TRUE)
+  expect_match(planned_text, "Usage", fixed = TRUE)
+  s <- usage_add(s, list(calls = 3, sent = 100, received = 50, total = 150))
   expect_equal(s$calls, 3L)
   expect_equal(s$total, 150L)
   expect_equal(s$planned_calls, 0L)  # reset after a run
+
+  s <- usage_add(s, list(result_rows = 2, sent = 0, received = 0, total = 0))
+  expect_equal(s$result_rows, 2L)
 })
 
-test_that("token counts are extracted from a result frame", {
-  df <- data.frame(response_text = c("a", "b"),
-                   sent_tokens = c(5, 6), rec_tokens = c(2, 3),
-                   total_tokens = c(7, 9))
-  tc <- extract_token_counts(df)
-  expect_equal(tc$calls, 2L)
-  expect_equal(tc$total, 16L)
+test_that("the shared sidebar presents Demo as a complete state", {
+  html <- paste(as.character(shell_sidebar()), collapse = " ")
+  expect_lt(regexpr("Mode", html, fixed = TRUE),
+            regexpr("Provider", html, fixed = TRUE))
+  expect_match(
+    html,
+    "Bundled deterministic demo. No model, API key, or API calls.",
+    fixed = TRUE
+  )
+  expect_match(html, "input.run_mode === 'live'", fixed = TRUE)
+  expect_match(html, "Generation settings", fixed = TRUE)
+  expect_match(html, "accordion-button collapsed", fixed = TRUE)
+  expect_match(
+    html,
+    'placeholder = "Model id from the selected provider"',
+    fixed = TRUE
+  )
+  expect_match(html, 'placeholder = "Model default"', fixed = TRUE)
+
+  custom <- paste(
+    as.character(shell_sidebar(
+      max_tokens_help = "Leave blank to use 512.",
+      max_tokens_placeholder = "Package default: 512"
+    )),
+    collapse = " "
+  )
+  expect_match(custom, "Leave blank to use 512.", fixed = TRUE)
+  expect_match(custom, 'placeholder = "Package default: 512"', fixed = TRUE)
+})
+
+test_that("studio themes share the family palette", {
+  themes <- lapply(c("content", "panel", "focus"), llmr_theme)
+  expect_true(all(vapply(themes, inherits, logical(1), "sass_bundle")))
+  expect_error(llmr_theme("other"), "arg")
+  expect_error(llmr_theme("content", primary = "red"), "fixes")
+})
+
+test_that("studio themes prevent text outputs from collapsing", {
+  theme <- llmr_theme("content")
+  rules <- paste(
+    unlist(
+      lapply(theme$layers, function(layer) layer$rules),
+      recursive = TRUE,
+      use.names = FALSE
+    ),
+    collapse = "\n"
+  )
+
+  expect_match(rules, "pre, .shiny-text-output", fixed = TRUE)
+  expect_match(rules, "min-height: 8rem", fixed = TRUE)
+  expect_match(rules, "max-height: 32rem", fixed = TRUE)
+  expect_match(rules, "overflow: auto", fixed = TRUE)
+  expect_match(rules, "flex: 0 0 auto", fixed = TRUE)
+})
+
+test_that("token counts use explicit call provenance", {
+  packed <- data.frame(response_text = c("a", "b", "c"),
+                       request_id = c("request-1", "request-1", "request-2"),
+                       sent_tokens = c(5, 6, 7), rec_tokens = c(2, 3, 4),
+                       total_tokens = c(7, 9, 11))
+  packed_counts <- extract_token_counts(packed)
+  expect_equal(packed_counts$calls, 2L)
+  expect_equal(packed_counts$total, 27L)
+
+  tool_loop <- data.frame(response_text = "done", sent_tokens = 8,
+                          rec_tokens = 3, total_tokens = 11)
+  tool_loop$call_id <- I(list(c("call-1", "call-2")))
+  expect_equal(extract_token_counts(tool_loop)$calls, 2L)
+
+  no_provenance <- packed[names(packed) != "request_id"]
+  row_counts <- extract_token_counts(no_provenance)
+  expect_false("calls" %in% names(row_counts))
+  expect_equal(row_counts$result_rows, 3L)
+})
+
+test_that("report_text propagates method errors and falls back only when missing", {
+  skip_if_not_installed("LLMR")
+  method_class <- "llmrshiny_failing_report"
+  method_name <- paste0("report.", method_class)
+  registerS3method(
+    "report", method_class,
+    function(x, ...) stop("report method failed"),
+    envir = asNamespace("LLMR")
+  )
+  method_table <- environment(LLMR::report)[[".__S3MethodsTable__."]]
+  withr::defer(rm(list = method_name, envir = method_table))
+
+  failing <- structure(list(), class = method_class)
+  expect_error(report_text(failing), "report method failed")
+
+  missing <- structure(list(answer = 42L),
+                       class = "llmrshiny_missing_report")
+  expect_match(report_text(missing), "42")
+})
+
+test_that("diagnostics_table propagates method errors and falls back when missing", {
+  skip_if_not_installed("LLMR")
+  method_class <- "llmrshiny_failing_diagnostics"
+  method_name <- paste0("diagnostics.", method_class)
+  registerS3method(
+    "diagnostics", method_class,
+    function(x, ...) stop("diagnostics method failed"),
+    envir = asNamespace("LLMR")
+  )
+  method_table <- environment(LLMR::diagnostics)[[".__S3MethodsTable__."]]
+  withr::defer(rm(list = method_name, envir = method_table))
+
+  failing <- structure(list(), class = method_class)
+  expect_error(diagnostics_table(failing), "diagnostics method failed")
+
+  missing <- structure(list(), class = "llmrshiny_missing_diagnostics")
+  expect_null(diagnostics_table(missing))
 })
 
 test_that("safe_llmr_call captures errors as a banner, not a crash", {
@@ -82,11 +285,23 @@ test_that("safe_llmr_call captures errors as a banner, not a crash", {
   expect_s3_class(bad$ui, "shiny.tag")
 })
 
-test_that("install guidance names the github remote", {
-  ui <- install_guidance_ui("LLMRpanel")
-  txt <- paste(as.character(ui), collapse = " ")
-  expect_match(txt, "asanaei/LLMRpanel")
-  expect_match(txt, "install_github")
+test_that("install guidance distinguishes released and unreleased packages", {
+  for (package in c("LLMR", "LLMR.shiny")) {
+    txt <- paste(as.character(install_guidance_ui(package)), collapse = " ")
+    expect_match(txt, paste0('install.packages("', package, '")'), fixed = TRUE)
+    expect_no_match(txt, "install_github", fixed = TRUE)
+  }
+
+  remotes <- c(
+    LLMRcontent = "asanaei/LLMRcontent",
+    LLMRpanel = "asanaei/LLMRpanel",
+    FocusGroup = "asanaei/FocusGroup"
+  )
+  for (package in names(remotes)) {
+    txt <- paste(as.character(install_guidance_ui(package)), collapse = " ")
+    expect_match(txt, "install_github", fixed = TRUE)
+    expect_match(txt, remotes[[package]], fixed = TRUE)
+  }
 })
 
 test_that("an unknown provider falls back to empty string / provider id, not NA", {
@@ -94,11 +309,64 @@ test_that("an unknown provider falls back to empty string / provider id, not NA"
   expect_identical(provider_display_name("no_such_provider"), "no_such_provider")
 })
 
+test_that("build_llm_config returns an LLMR config", {
+  skip_if_not_installed("LLMR")
+  withr::local_envvar(GROQ_API_KEY = "test-key-not-real")
+  config <- build_llm_config(
+    "groq",
+    "test-model",
+    temperature = 0.7,
+    max_tokens = 512,
+    reasoning_effort = "high"
+  )
+  expect_s3_class(config, "llm_config")
+  expect_false(inherits(config, "llmrshiny_config"))
+  expect_equal(
+    config$model_params,
+    list(temperature = 0.7, max_tokens = 512, reasoning_effort = "high")
+  )
+})
+
+test_that("build_llm_config omits generation settings left at default", {
+  skip_if_not_installed("LLMR")
+  config <- build_llm_config(
+    "groq",
+    "test-model",
+    temperature = NULL,
+    max_tokens = NA_real_,
+    reasoning_effort = ""
+  )
+  expect_identical(config$model_params, list())
+
+  blank <- build_llm_config(
+    "groq",
+    "test-model",
+    max_tokens = "",
+    reasoning_effort = ""
+  )
+  expect_false("max_tokens" %in% names(blank$model_params))
+
+  compatible <- build_llm_config(
+    "groq",
+    "test-model",
+    troubleshooting = TRUE,
+    top_p = 0.8
+  )
+  expect_true(compatible$troubleshooting)
+  expect_equal(compatible$model_params, list(top_p = 0.8))
+})
+
+test_that("build_llm_config requires LLMR with actionable guidance", {
+  local_mocked_bindings(pkg_available = function(package) FALSE)
+  expect_error(
+    build_llm_config("groq", "test-model"),
+    "install\\.packages"
+  )
+})
+
 test_that("build_runner rejects an unknown mode instead of going live silently", {
   expect_error(build_runner("liv"), "must be")
   expect_error(build_runner("Demo"), "must be")
-  expect_true(is.function(build_runner("demo")))
-  expect_null(build_runner("live"))
 })
 
 test_that("validate_column_mapping gives a clear message for no selection", {
@@ -121,15 +389,15 @@ test_that("LLMR classed conditions are recognized by class, not a field", {
   expect_identical(condition_category(cond_of("auth")), "auth")
   expect_identical(condition_category(cond_of("rate_limit")), "rate_limit")
   expect_identical(condition_category(cond_of("param")), "param")
-  expect_true(is_auth_error(cond_of("auth")))
-  expect_false(is_auth_error(cond_of("server")))
+  expect_true(LLMR.shiny:::is_auth_error(cond_of("auth")))
+  expect_false(LLMR.shiny:::is_auth_error(cond_of("server")))
   # a plain condition still resolves to NA / not-auth
   plain <- simpleError("boom")
   expect_identical(condition_category(plain), NA_character_)
-  expect_false(is_auth_error(plain))
+  expect_false(LLMR.shiny:::is_auth_error(plain))
   # the field fallback still works for foreign conditions
   foreign <- simpleError("boom"); foreign$category <- "auth"
-  expect_true(is_auth_error(foreign))
+  expect_true(LLMR.shiny:::is_auth_error(foreign))
 })
 
 test_that("an auth error becomes the key banner through safe_llmr_call", {
@@ -167,6 +435,15 @@ test_that("map_columns(keep_original = TRUE) preserves pre-existing columns", {
   expect_equal(m2$text, c("orig A", "orig B"))
 })
 
+test_that("as_display_table requires an explicit list component", {
+  parts <- list(
+    first = data.frame(a = 1:2),
+    second = data.frame(b = c("x", "y"))
+  )
+  expect_error(as_display_table(parts), "component")
+  expect_equal(as_display_table(parts, component = "second"), parts$second)
+})
+
 test_that("demo runner survives a zero-row frame and NA input text", {
   r <- demo_runner()
   z <- r(data.frame(text = character(0)))
@@ -181,13 +458,13 @@ test_that("demo runner survives a zero-row frame and NA input text", {
   expect_equal(out$total_tokens, out$sent_tokens + out$rec_tokens)
 })
 
-test_that("cost tile shows the planned line only for a pending run", {
-  s <- cost_set_plan(cost_empty(), 10, "tuning")
-  txt <- paste(as.character(cost_tile(s)), collapse = " ")
-  expect_match(txt, "tuning: 10 calls")
+test_that("usage tile shows the planned line only for a pending run", {
+  s <- usage_set_plan(usage_empty(), 10, "tuning")
+  txt <- paste(as.character(usage_tile(s)), collapse = " ")
+  expect_match(txt, "10 planned calls. tuning.", fixed = TRUE)
 
-  s <- cost_add_usage(s, list(calls = 10, sent = 40, received = 20, total = 60))
-  txt2 <- paste(as.character(cost_tile(s)), collapse = " ")
+  s <- usage_add(s, list(calls = 10, sent = 40, received = 20, total = 60))
+  txt2 <- paste(as.character(usage_tile(s)), collapse = " ")
   expect_no_match(txt2, "No pending run: 0 calls", fixed = TRUE)
   expect_match(txt2, "No pending run")
 })

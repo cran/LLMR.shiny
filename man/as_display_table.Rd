@@ -4,17 +4,31 @@
 \alias{as_display_table}
 \title{Coerce an arbitrary result to a display table}
 \usage{
-as_display_table(x, max_rows = 500L)
+as_display_table(x, max_rows = 500L, component = NULL, digits = 3L)
 }
 \arguments{
 \item{x}{Any object.}
 
 \item{max_rows}{Row cap for the display.}
+
+\item{component}{For a list, the name of the component to display.}
+
+\item{digits}{Number of significant digits used for ordinary double columns.
+Integer, identifier, and nonnumeric columns are not changed.}
 }
 \value{
 A data frame.
 }
 \description{
-Data frames and matrices pass through (head-limited); a list yields its first
-data frame; anything else becomes a one-column capture of its structure.
+Data frames and matrices pass through (head-limited). For a list, name the
+component to display. Anything else becomes a one-column capture of its
+structure.
+}
+\examples{
+x <- data.frame(
+  item_id = c(1000001, 1000002),
+  share = c(0.123456, 0.987654),
+  count = c(3L, 7L)
+)
+as_display_table(x)
 }

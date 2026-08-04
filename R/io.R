@@ -32,6 +32,50 @@ column_names_for_mapping <- function(data) {
   names(as.data.frame(data))
 }
 
+#' Guess a column for a data-mapping role
+#'
+#' Column names are matched without regard to case or common separators.
+#' When no recognized name remains, the first available column is returned.
+#' Text names include `text`, `body`, `content`, `response`, `message`, and
+#' `utterance`; label names include `label`, `labels`, `code`, `category`, and
+#' `class`; identifier names include `id`, `doc_id`, and `unit_id`.
+#'
+#' @param cols A character vector of column names.
+#' @param kind The mapping role to identify: `"text"`, `"label"`, or `"id"`.
+#' @param exclude Column names that are already assigned to another role.
+#' @return One column name as a character vector of length one, or `NULL` when
+#'   no column remains.
+#' @export
+#' @examples
+#' cols <- c("id", "text", "label")
+#' text_col <- guess_column(cols, "text")
+#' guess_column(cols, "label", exclude = text_col)
+guess_column <- function(cols, kind = c("text", "label", "id"),
+                         exclude = character()) {
+  kind <- match.arg(kind)
+  cols <- as.character(cols)
+  remaining <- cols[!is.na(cols) & !cols %in% as.character(exclude)]
+  if (!length(remaining)) {
+    return(NULL)
+  }
+
+  variants <- list(
+    text = c("text", "body", "content", "response", "message", "utterance"),
+    label = c("label", "labels", "code", "category", "class"),
+    id = c("id", "doc_id", "unit_id")
+  )
+  normalize <- function(x) {
+    gsub("[^[:alnum:]]", "", tolower(trimws(x)))
+  }
+  matched <- match(normalize(variants[[kind]]), normalize(remaining), nomatch = 0L)
+  matched <- matched[matched > 0L]
+  if (length(matched)) {
+    return(remaining[[matched[[1L]]]])
+  }
+
+  remaining[[1L]]
+}
+
 #' Validate a column mapping
 #'
 #' @param data A data frame.
@@ -93,19 +137,65 @@ map_columns <- function(data, text_col, label_col = NULL, keep_original = TRUE) 
 
 #' Coerce an arbitrary result to a display table
 #'
-#' Data frames and matrices pass through (head-limited); a list yields its first
-#' data frame; anything else becomes a one-column capture of its structure.
+#' Data frames and matrices pass through (head-limited). For a list, name the
+#' component to display. Anything else becomes a one-column capture of its
+#' structure.
 #'
 #' @param x Any object.
 #' @param max_rows Row cap for the display.
+#' @param component For a list, the name of the component to display.
+#' @param digits Number of significant digits used for ordinary double columns.
+#'   Integer, identifier, and nonnumeric columns are not changed.
 #' @return A data frame.
 #' @export
-as_display_table <- function(x, max_rows = 500L) {
-  if (is.data.frame(x)) return(utils::head(as.data.frame(x), max_rows))
-  if (is.matrix(x)) return(utils::head(as.data.frame(x), max_rows))
+#' @examples
+#' x <- data.frame(
+#'   item_id = c(1000001, 1000002),
+#'   share = c(0.123456, 0.987654),
+#'   count = c(3L, 7L)
+#' )
+#' as_display_table(x)
+as_display_table <- function(x, max_rows = 500L, component = NULL, digits = 3L) {
+  if (length(digits) != 1L || !is.numeric(digits) || is.na(digits) ||
+      !is.finite(digits) || digits < 1 || digits != as.integer(digits)) {
+    stop("`digits` must be one positive whole number.", call. = FALSE)
+  }
+
+  prepare <- function(value) {
+    out <- utils::head(as.data.frame(value), max_rows)
+    column_names <- names(out)
+    is_id <- grepl(
+      "(^ids?$|(^|[._])(ids?|uuids?|guids?)$|identifier)",
+      column_names,
+      ignore.case = TRUE
+    ) | grepl("(Id|ID|Uuid|UUID|Guid|GUID)s?$", column_names)
+    # Counts are often stored as doubles; rounding them to significant digits
+    # would misreport them (123456 words as 123000), so only columns that
+    # actually carry fractions are rounded.
+    roundable <- vapply(
+      out,
+      function(column) {
+        is.double(column) && is.null(attr(column, "class")) &&
+          any(is.finite(column) & column != round(column))
+      },
+      logical(1)
+    ) & !is_id
+    out[roundable] <- lapply(out[roundable], signif, digits = as.integer(digits))
+    out
+  }
+
+  if (is.data.frame(x)) return(prepare(x))
+  if (is.matrix(x)) return(prepare(x))
   if (is.list(x)) {
-    dfs <- Filter(is.data.frame, x)
-    if (length(dfs) > 0) return(utils::head(as.data.frame(dfs[[1]]), max_rows))
+    if (length(component) != 1L || !is.character(component) ||
+        !component %in% names(x)) {
+      stop("`component` must name one component of a list result.", call. = FALSE)
+    }
+    return(as_display_table(
+      x[[component]],
+      max_rows = max_rows,
+      digits = digits
+    ))
   }
   data.frame(
     output = paste(utils::capture.output(utils::str(x, max.level = 2)), collapse = "\n"),
